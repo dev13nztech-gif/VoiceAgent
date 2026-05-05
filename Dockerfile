@@ -6,8 +6,8 @@
 #   • uvicorn    — FastAPI + faster-whisper transcription backend
 #   • supervisord — lightweight process manager keeping both alive
 #
-# Build args
-#   WHISPER_MODEL  tiny | base (default) | small | medium | large-v2 | large-v3
+# Models baked in at build time: medium · large-v2 · large-v3
+# The frontend dynamically shows only models present on disk.
 #
 # Local usage
 #   docker build -t voiceagent .
@@ -32,17 +32,6 @@ RUN npm run build
 # ── Stage 2: Production image ──────────────────────────────────────────────────
 FROM python:3.11-slim
 
-# Which Whisper model to bake into the image at build time.
-# Baking avoids a download on first request (no cold-start penalty).
-#
-#   tiny     ~75 MB model   1 GB RAM   fastest, lower accuracy
-#   base     ~145 MB model  2 GB RAM   ← default, good for most use cases
-#   small    ~465 MB model  2 GB RAM   balanced
-#   medium   ~1.5 GB model  4 GB RAM   high accuracy
-#   large-v2 ~3 GB model    8 GB RAM   best quality
-ARG WHISPER_MODEL=base
-ENV WHISPER_MODEL=${WHISPER_MODEL}
-
 # System packages:
 #   nginx        — web server / reverse proxy
 #   supervisor   — keeps nginx + uvicorn running
@@ -59,18 +48,27 @@ WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Pre-download Whisper model ─────────────────────────────────────────────────
-# Running WhisperModel() here triggers the HuggingFace download and caches the
-# weights in /root/.cache/huggingface inside the image layer.  Subsequent
-# container starts find the model already on disk — no internet needed at runtime.
+# ── Pre-download Whisper models ────────────────────────────────────────────────
+# All three models are baked into the image so the frontend can offer all of
+# them without any internet access at runtime.
+#
+#   medium   ~1.5 GB   high accuracy, reasonable speed
+#   large-v2 ~3.0 GB   best quality (stable)
+#   large-v3 ~3.0 GB   best quality (latest)
+#
+# Total added image size: ~7.5 GB — plan registry storage accordingly.
 RUN python - <<'EOF'
-import os
 from faster_whisper import WhisperModel
-model = os.environ["WHISPER_MODEL"]
-print(f"[build] Downloading Whisper '{model}' model...", flush=True)
-WhisperModel(model, device="cpu", compute_type="int8")
-print("[build] Model cached.", flush=True)
+for model in ["medium", "large-v2", "large-v3"]:
+    print(f"[build] Downloading Whisper '{model}'...", flush=True)
+    WhisperModel(model, device="cpu", compute_type="int8")
+    print(f"[build] '{model}' cached.", flush=True)
+print("[build] All models ready.", flush=True)
 EOF
+
+# Default model to pre-load at container startup (warms the cache so the first
+# transcription request is fast). Must be one of the models downloaded above.
+ENV WHISPER_MODEL=medium
 
 # ── Application source ─────────────────────────────────────────────────────────
 COPY backend/main.py .

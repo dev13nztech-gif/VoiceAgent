@@ -1,66 +1,124 @@
+import { useState, useEffect } from "react";
 import styles from "./ModelSelector.module.css";
 
-const MODELS = [
-  { value: "tiny",     label: "Tiny",     desc: "~39M params · fastest · lower accuracy" },
-  { value: "base",     label: "Base",     desc: "~74M params · fast · good accuracy" },
-  { value: "small",    label: "Small",    desc: "~244M params · balanced" },
-  { value: "medium",   label: "Medium",   desc: "~769M params · high accuracy · slower" },
-  { value: "large-v2", label: "Large v2", desc: "~1.5B params · best quality" },
-  { value: "large-v3", label: "Large v3", desc: "~1.5B params · latest · best quality" },
-];
+// Metadata for every possible model — only downloaded ones are rendered.
+const MODEL_META = {
+  tiny:       { label: "Tiny",     desc: "~39M params · fastest · lower accuracy" },
+  base:       { label: "Base",     desc: "~74M params · fast · good accuracy" },
+  small:      { label: "Small",    desc: "~244M params · balanced" },
+  medium:     { label: "Medium",   desc: "~769M params · high accuracy" },
+  "large-v2": { label: "Large v2", desc: "~1.5B params · best quality (stable)" },
+  "large-v3": { label: "Large v3", desc: "~1.5B params · latest · best quality" },
+};
 
 const LANGUAGES = [
-  { value: "auto",  label: "Auto-detect" },
-  { value: "en",    label: "English" },
-  { value: "zh",    label: "Chinese" },
-  { value: "de",    label: "German" },
-  { value: "es",    label: "Spanish" },
-  { value: "ru",    label: "Russian" },
-  { value: "fr",    label: "French" },
-  { value: "ja",    label: "Japanese" },
-  { value: "pt",    label: "Portuguese" },
-  { value: "ko",    label: "Korean" },
-  { value: "ar",    label: "Arabic" },
-  { value: "hi",    label: "Hindi" },
-  { value: "it",    label: "Italian" },
-  { value: "nl",    label: "Dutch" },
-  { value: "pl",    label: "Polish" },
-  { value: "tr",    label: "Turkish" },
-  { value: "bn",    label: "Bengali" },
-  { value: "id",    label: "Indonesian" },
-  { value: "sv",    label: "Swedish" },
-  { value: "uk",    label: "Ukrainian" },
+  { value: "auto", label: "Auto-detect" },
+  { value: "en",   label: "English" },
+  { value: "zh",   label: "Chinese" },
+  { value: "de",   label: "German" },
+  { value: "es",   label: "Spanish" },
+  { value: "ru",   label: "Russian" },
+  { value: "fr",   label: "French" },
+  { value: "ja",   label: "Japanese" },
+  { value: "pt",   label: "Portuguese" },
+  { value: "ko",   label: "Korean" },
+  { value: "ar",   label: "Arabic" },
+  { value: "hi",   label: "Hindi" },
+  { value: "it",   label: "Italian" },
+  { value: "nl",   label: "Dutch" },
+  { value: "pl",   label: "Polish" },
+  { value: "tr",   label: "Turkish" },
+  { value: "bn",   label: "Bengali" },
+  { value: "id",   label: "Indonesian" },
+  { value: "sv",   label: "Swedish" },
+  { value: "uk",   label: "Ukrainian" },
 ];
 
-export default function ModelSelector({ model, onModelChange, language, onLanguageChange, disabled }) {
-  const selected = MODELS.find((m) => m.value === model);
+export default function ModelSelector({
+  model,
+  onModelChange,
+  language,
+  onLanguageChange,
+  disabled,
+}) {
+  const [availableModels, setAvailableModels] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(false);
+
+  // Fetch the list of downloaded models from the backend on mount.
+  useEffect(() => {
+    fetch("/api/models")
+      .then((r) => {
+        if (!r.ok) throw new Error("models endpoint error");
+        return r.json();
+      })
+      .then((data) => {
+        setAvailableModels(data.models ?? []);
+        // If the currently selected model isn't in the downloaded set,
+        // switch to the server-recommended default.
+        if (data.models && !data.models.includes(model)) {
+          onModelChange(data.default ?? data.models[0]);
+        }
+        setLoading(false);
+      })
+      .catch(() => {
+        setFetchError(true);
+        setLoading(false);
+      });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const selectedMeta = MODEL_META[model];
 
   return (
     <div className={styles.wrapper}>
+      {/* ── Whisper Model ── */}
       <div className={styles.group}>
         <label className={styles.label}>Whisper Model</label>
-        <div className={styles.modelGrid}>
-          {MODELS.map((m) => (
-            <button
-              key={m.value}
-              className={`${styles.modelBtn} ${model === m.value ? styles.active : ""}`}
-              onClick={() => onModelChange(m.value)}
-              disabled={disabled}
-              title={m.desc}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-        {selected && (
-          <p className={styles.modelDesc}>{selected.desc}</p>
+
+        {loading && (
+          <div className={styles.loadingRow}>
+            <div className={styles.spinner} />
+            <span className={styles.loadingText}>Detecting available models…</span>
+          </div>
+        )}
+
+        {fetchError && !loading && (
+          <p className={styles.errorText}>
+            Could not load model list — backend may still be starting up.
+          </p>
+        )}
+
+        {!loading && !fetchError && (
+          <>
+            <div className={styles.modelGrid}>
+              {availableModels.map((m) => (
+                <button
+                  key={m}
+                  className={`${styles.modelBtn} ${model === m ? styles.active : ""}`}
+                  onClick={() => onModelChange(m)}
+                  disabled={disabled}
+                  title={MODEL_META[m]?.desc ?? m}
+                >
+                  {MODEL_META[m]?.label ?? m}
+                </button>
+              ))}
+            </div>
+
+            {selectedMeta && (
+              <p className={styles.modelDesc}>{selectedMeta.desc}</p>
+            )}
+          </>
         )}
       </div>
 
       <div className={styles.divider} />
 
+      {/* ── Language ── */}
       <div className={styles.group}>
-        <label className={styles.label} htmlFor="lang-select">Language</label>
+        <label className={styles.label} htmlFor="lang-select">
+          Language
+        </label>
         <select
           id="lang-select"
           className={styles.select}
@@ -69,7 +127,9 @@ export default function ModelSelector({ model, onModelChange, language, onLangua
           disabled={disabled}
         >
           {LANGUAGES.map((l) => (
-            <option key={l.value} value={l.value}>{l.label}</option>
+            <option key={l.value} value={l.value}>
+              {l.label}
+            </option>
           ))}
         </select>
         <p className={styles.modelDesc}>

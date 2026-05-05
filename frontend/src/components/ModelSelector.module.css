@@ -90,6 +90,39 @@
   cursor: not-allowed;
 }
 
+/* ── Loading / error states ────────────────────────────────────────────────── */
+.loadingRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loadingText {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.errorText {
+  font-size: 0.82rem;
+  color: var(--warning);
+  line-height: 1.5;
+}
+
 @media (max-width: 600px) {
   .divider { display: none; }
   .wrapper { flex-direction: column; }
