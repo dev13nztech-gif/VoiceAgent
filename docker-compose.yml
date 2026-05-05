@@ -1,27 +1,41 @@
 version: "3.9"
 
-services:
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - whisper_models:/root/.cache/huggingface
-    environment:
-      - PYTHONUNBUFFERED=1
-    restart: unless-stopped
+# Single-container VoiceAgent
+# Usage:
+#   docker compose up --build                           # base model (default)
+#   WHISPER_MODEL=medium docker compose up --build      # medium model
+#
+# The image bundles:
+#   React SPA     — built at image-build time, served by nginx on :8080
+#   FastAPI       — uvicorn on internal :8001, proxied via /api/*
+#   supervisord   — keeps nginx + uvicorn running
 
-  frontend:
+services:
+  voiceagent:
     build:
-      context: ./frontend
+      context: .
       dockerfile: Dockerfile
+      args:
+        # Model is baked into the image at build time.
+        # Change WHISPER_MODEL and rebuild to switch models.
+        WHISPER_MODEL: ${WHISPER_MODEL:-base}
     ports:
-      - "3000:80"
-    depends_on:
-      - backend
+      - "8080:8080"
+    volumes:
+      # Persists the HuggingFace cache across rebuilds so the model is not
+      # re-downloaded every time you change application code.
+      - whisper_cache:/root/.cache/huggingface
+    environment:
+      PORT: "8080"
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 volumes:
-  whisper_models:
+  whisper_cache:
