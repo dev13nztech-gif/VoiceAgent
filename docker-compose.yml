@@ -6,9 +6,9 @@ version: "3.9"
 #   docker compose up --build
 #   open http://localhost:8080
 #
-# The image bundles three Whisper models baked in at build time:
-#   medium · large-v2 · large-v3
-# The frontend automatically shows only the models present on disk.
+# FastAPI serves both the transcription API (/api/*) and the React SPA —
+# no nginx or supervisord required.
+# Models baked in at build time: medium · large-v2 · large-v3
 
 services:
   voiceagent:
@@ -22,13 +22,16 @@ services:
       - whisper_cache:/root/.cache/huggingface
     environment:
       PORT: "8080"
+      STATIC_DIR: "/app/static"
       # Controls which model is pre-loaded at startup (fast first request).
       # Must be one of: medium | large-v2 | large-v3
       WHISPER_MODEL: medium
       HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      # Use Python (always available) instead of curl
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3

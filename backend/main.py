@@ -6,6 +6,8 @@ from typing import List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from faster_whisper import WhisperModel
 
 app = FastAPI(title="VoiceAgent API", version="1.0.0")
@@ -27,7 +29,7 @@ DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "medium")
 _model_cache: dict[str, WhisperModel] = {}
 
 
-# ── Model discovery ────────────────────────────────────────────────────────────
+# ── Model discovery ──────────────────────────────────────────────────────────────
 
 def get_downloaded_models() -> List[str]:
     """
@@ -35,7 +37,7 @@ def get_downloaded_models() -> List[str]:
     HuggingFace hub cache on disk.  The frontend shows only these models.
 
     faster-whisper stores weights under:
-        $HF_HOME/hub/models--Systran--faster-whisper-{name}/snapshots/...
+        $HF_HOME/hub/models--Systran--faster-whisper-{name}/snapshots/…
     A model is considered available when that directory exists and is non-empty.
     """
     hf_home = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface"))
@@ -52,7 +54,7 @@ def get_downloaded_models() -> List[str]:
     return available if available else ALL_MODELS
 
 
-# ── Model loader ───────────────────────────────────────────────────────────────
+# ── Model loader ──────────────────────────────────────────────────────────────
 
 def load_model(model_size: str) -> WhisperModel:
     if model_size not in _model_cache:
@@ -64,7 +66,7 @@ def load_model(model_size: str) -> WhisperModel:
     return _model_cache[model_size]
 
 
-# ── Startup ────────────────────────────────────────────────────────────────────
+# ── Startup ──────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup():
@@ -72,7 +74,7 @@ async def startup():
     load_model(DEFAULT_MODEL)
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# ── Routes ──────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health():
@@ -120,7 +122,7 @@ async def transcribe(
         t0 = time.time()
         whisper = load_model(model)
 
-        # language=None -> auto-detect; explicit code forces a language.
+        # language=None → auto-detect; explicit code forces a language.
         forced_lang = (
             language if language and language.lower() not in ("", "auto") else None
         )
@@ -171,3 +173,40 @@ async def transcribe(
         }
     finally:
         os.unlink(tmp_path)
+
+
+# ── Static / SPA serving ─────────────────────────────────────────────────────────
+# In Docker  → STATIC_DIR=/app/static  (set via ENV in Dockerfile)
+# Locally    → defaults to ../frontend/dist  (relative to this file)
+#
+# All /api/* routes above are registered first, so they always win.
+# The catch-all below only fires for non-API paths → perfect SPA fallback.
+
+_STATIC_DIR = Path(
+    os.getenv("STATIC_DIR", Path(__file__).parent.parent / "frontend" / "dist")
+)
+
+if _STATIC_DIR.exists():
+    # Serve hashed Vite assets (JS / CSS bundles) from /assets/*
+    _assets_dir = _STATIC_DIR / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_root():
+        return FileResponse(str(_STATIC_DIR / "index.html"))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """Serve static files that exist; fall back to index.html for SPA routes."""
+        candidate = _STATIC_DIR / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_STATIC_DIR / "index.html"))
+else:
+    @app.get("/", include_in_schema=False)
+    async def no_frontend():
+        return {
+            "message": "Frontend not built. Run `npm run build` inside frontend/ first.",
+            "api_docs": "/docs",
+        }
