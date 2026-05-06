@@ -33,21 +33,27 @@ _model_cache: dict[str, WhisperModel] = {}
 
 def get_downloaded_models() -> List[str]:
     """
-    Return the subset of ALL_MODELS whose weights are already present in the
+    Return the subset of ALL_MODELS whose weights are fully present in the
     HuggingFace hub cache on disk.  The frontend shows only these models.
 
     faster-whisper stores weights under:
-        $HF_HOME/hub/models--Systran--faster-whisper-{name}/snapshots/…
-    A model is considered available when that directory exists and is non-empty.
+        $HF_HOME/hub/models--Systran--faster-whisper-{name}/snapshots/<sha>/
+    A model is considered complete only when model.bin exists in a snapshot
+    directory — this guards against partial/incomplete downloads.
     """
     hf_home = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface"))
     hub_dir = hf_home / "hub"
 
     available: List[str] = []
     for name in ALL_MODELS:
-        repo_dir = hub_dir / f"models--Systran--faster-whisper-{name}"
-        if repo_dir.exists() and any(repo_dir.iterdir()):
-            available.append(name)
+        snapshots = hub_dir / f"models--Systran--faster-whisper-{name}" / "snapshots"
+        if snapshots.exists():
+            # A model is fully downloaded only when model.bin is present in
+            # at least one snapshot — guards against partial/incomplete downloads.
+            for snapshot in snapshots.iterdir():
+                if (snapshot / "model.bin").exists():
+                    available.append(name)
+                    break
 
     # If nothing is cached yet (e.g. pure local dev before any download),
     # fall back to the full list so the UI is never empty.
