@@ -25,6 +25,27 @@ ALL_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
 # Model to pre-load at startup (set via WHISPER_MODEL env var).
 DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "medium")
 
+# ── Device / compute-type selection ────────────────────────────────────────────────────
+# DEVICE       — "cuda" | "cpu" | "auto" (default: auto-detect)
+# COMPUTE_TYPE — "float16" | "int8_float16" | "int8" (default: auto)
+#
+# GPU image (Dockerfile.gpu) sets DEVICE=cuda, COMPUTE_TYPE=float16 via ENV.
+# CPU image keeps defaults (cpu / int8).
+try:
+    import ctranslate2 as _ct2
+    _cuda_count = _ct2.get_cuda_device_count()
+except Exception:
+    _cuda_count = 0
+
+_device_env = os.getenv("DEVICE", "auto")
+DEVICE: str = (
+    ("cuda" if _cuda_count > 0 else "cpu") if _device_env == "auto" else _device_env
+)
+COMPUTE_TYPE: str = os.getenv(
+    "COMPUTE_TYPE",
+    "float16" if DEVICE == "cuda" else "int8",
+)
+
 # In-process model cache — avoids reloading weights on every request.
 _model_cache: dict[str, WhisperModel] = {}
 
@@ -64,9 +85,13 @@ def get_downloaded_models() -> List[str]:
 
 def load_model(model_size: str) -> WhisperModel:
     if model_size not in _model_cache:
-        print(f"[VoiceAgent] Loading Whisper model: {model_size} ...", flush=True)
+        print(
+            f"[VoiceAgent] Loading Whisper '{model_size}' "
+            f"on {DEVICE} ({COMPUTE_TYPE}) ...",
+            flush=True,
+        )
         _model_cache[model_size] = WhisperModel(
-            model_size, device="cpu", compute_type="int8"
+            model_size, device=DEVICE, compute_type=COMPUTE_TYPE
         )
         print(f"[VoiceAgent] Model '{model_size}' ready.", flush=True)
     return _model_cache[model_size]
@@ -86,6 +111,8 @@ async def startup():
 def health():
     return {
         "status": "ok",
+        "device": DEVICE,
+        "compute_type": COMPUTE_TYPE,
         "loaded_models": list(_model_cache.keys()),
     }
 
