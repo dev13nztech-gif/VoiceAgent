@@ -54,14 +54,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the chosen Whisper model so the first request never has to
 # fetch weights from the internet (avoids Cloud Run cold-start timeouts).
-RUN python - <<'EOF'
-import os
-from faster_whisper import WhisperModel
-m = os.environ["WHISPER_MODEL"]
-print(f"[build] Pre-downloading Whisper model: {m}", flush=True)
-WhisperModel(m, device="cpu", compute_type="int8")
-print(f"[build] Model '{m}' cached.", flush=True)
-EOF
+# NOTE: written as `python -c` (single line) instead of a heredoc, because
+# Cloud Build's classic Docker builder does not support heredoc syntax.
+RUN python -c "import os; from faster_whisper import WhisperModel; m=os.environ['WHISPER_MODEL']; print(f'[build] Pre-downloading Whisper model: {m}', flush=True); WhisperModel(m, device='cpu', compute_type='int8'); print(f'[build] Model {m} cached.', flush=True)"
 
 # Backend source
 COPY backend/main.py .
