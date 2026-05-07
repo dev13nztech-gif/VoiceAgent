@@ -21,7 +21,7 @@ app.add_middleware(
 ALL_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
 
 # Model to pre-load at startup (set via WHISPER_MODEL env var).
-DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "medium")
+DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "tiny")
 
 # In-process model cache — avoids reloading weights on every request.
 _model_cache: dict[str, WhisperModel] = {}
