@@ -20,8 +20,9 @@ export default function App() {
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
 
-  // ── TTS state (text to pass to the TTS tab) ───────────────────────────────
+  // ── TTS state (text + language passed in from the STT tab) ───────────────
   const [ttsText, setTtsText] = useState("");
+  const [ttsLang, setTtsLang] = useState("");
 
   // ── STT handlers ──────────────────────────────────────────────────────────
   const handleTranscribe = useCallback(
@@ -72,9 +73,10 @@ export default function App() {
     setProgress(0);
   };
 
-  // Send transcription text to TTS tab
-  const handleSendToTTS = (text) => {
+  // Send transcription text + detected language to the TTS tab
+  const handleSendToTTS = (text, detectedLang = "") => {
     setTtsText(text);
+    setTtsLang(detectedLang);
     setActiveTab("tts");
   };
 
@@ -155,7 +157,11 @@ export default function App() {
 
           {/* ── TTS tab ── */}
           {activeTab === "tts" && (
-            <TextToSpeech key={ttsText} initialText={ttsText} />
+            <TextToSpeech
+              key={`${ttsText}|${ttsLang}`}
+              initialText={ttsText}
+              initialLang={ttsLang}
+            />
           )}
 
         </div>

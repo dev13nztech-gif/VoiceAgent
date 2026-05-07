@@ -1,7 +1,34 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import styles from "./TextToSpeech.module.css";
 
 const MAX_CHARS = 5000;
+
+// Same set the STT panel exposes — keep them in sync so Bangla is reachable
+// from both tabs without surprises.
+const LANGUAGES = [
+  { value: "",   label: "All languages" },
+  { value: "bn", label: "Bengali (বাংলা)" },
+  { value: "en", label: "English" },
+  { value: "hi", label: "Hindi (हिन्दी)" },
+  { value: "ar", label: "Arabic" },
+  { value: "zh", label: "Chinese" },
+  { value: "de", label: "German" },
+  { value: "es", label: "Spanish" },
+  { value: "fr", label: "French" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+  { value: "pt", label: "Portuguese" },
+  { value: "ru", label: "Russian" },
+  { value: "it", label: "Italian" },
+  { value: "nl", label: "Dutch" },
+  { value: "pl", label: "Polish" },
+  { value: "tr", label: "Turkish" },
+  { value: "id", label: "Indonesian" },
+  { value: "sv", label: "Swedish" },
+  { value: "uk", label: "Ukrainian" },
+];
+
+const LANG_LABEL = Object.fromEntries(LANGUAGES.map((l) => [l.value, l.label]));
 
 // Chrome cuts off long utterances; splitting by sentence avoids the bug.
 function splitIntoChunks(text, maxWords = 180) {
@@ -22,9 +49,10 @@ function splitIntoChunks(text, maxWords = 180) {
 
 const isSynthSupported = "speechSynthesis" in window;
 
-export default function TextToSpeech({ initialText = "" }) {
+export default function TextToSpeech({ initialText = "", initialLang = "" }) {
   const [text, setText] = useState(initialText);
   const [voices, setVoices] = useState([]);
+  const [lang, setLang] = useState(initialLang);
   const [voiceURI, setVoiceURI] = useState("");
   const [rate, setRate] = useState(1);
   const [pitch, setPitch] = useState(1);
@@ -36,35 +64,55 @@ export default function TextToSpeech({ initialText = "" }) {
     if (!synth) return;
     const load = () => {
       const v = synth.getVoices();
-      if (!v.length) return;
-      setVoices(v);
-      setVoiceURI((prev) => {
-        if (prev) return prev;
-        // Prefer a default or English voice
-        const def = v.find((x) => x.default) || v.find((x) => x.lang.startsWith("en")) || v[0];
-        return def?.voiceURI ?? "";
-      });
+      if (v.length) setVoices(v);
     };
     load();
     synth.addEventListener("voiceschanged", load);
     return () => synth.removeEventListener("voiceschanged", load);
   }, []);
 
-  // Sync external text prop (e.g. passed from transcription result)
+  // Sync external props (e.g. from a transcription result)
+  useEffect(() => { if (initialText) setText(initialText); }, [initialText]);
+  useEffect(() => { if (initialLang) setLang(initialLang); }, [initialLang]);
+
+  // Voices that match the selected language (prefix match: "bn" matches
+  // "bn-IN", "bn-BD" etc).  Empty `lang` means "show all".
+  const filteredVoices = useMemo(() => {
+    if (!lang) return voices;
+    const l = lang.toLowerCase();
+    return voices.filter((v) => (v.lang || "").toLowerCase().startsWith(l));
+  }, [voices, lang]);
+
+  // Whenever the filtered list changes, make sure the selected voice is still
+  // valid; if not, default to the first available voice (or English fallback).
   useEffect(() => {
-    if (initialText) setText(initialText);
-  }, [initialText]);
+    if (filteredVoices.length === 0) {
+      setVoiceURI("");
+      return;
+    }
+    const stillValid = filteredVoices.some((v) => v.voiceURI === voiceURI);
+    if (!stillValid) {
+      const def =
+        filteredVoices.find((v) => v.default) ||
+        filteredVoices.find((v) => v.lang?.toLowerCase().startsWith("en")) ||
+        filteredVoices[0];
+      setVoiceURI(def.voiceURI);
+    }
+  }, [filteredVoices]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Playback --------------------------------------------------------------
   const speak = useCallback(() => {
     if (!synth || !text.trim()) return;
     synth.cancel();
 
+    const voice = voices.find((v) => v.voiceURI === voiceURI);
     const chunks = splitIntoChunks(text);
     chunks.forEach((chunk, i) => {
       const u = new SpeechSynthesisUtterance(chunk);
-      const voice = voices.find((v) => v.voiceURI === voiceURI);
       if (voice) u.voice = voice;
+      // Hint the engine what language to use — helps prosody & fallback.
+      if (voice?.lang) u.lang = voice.lang;
+      else if (lang) u.lang = lang;
       u.rate = rate;
       u.pitch = pitch;
       if (i === 0) u.onstart = () => setStatus("speaking");
@@ -74,7 +122,7 @@ export default function TextToSpeech({ initialText = "" }) {
       }
       synth.speak(u);
     });
-  }, [synth, text, voices, voiceURI, rate, pitch]);
+  }, [synth, text, voices, voiceURI, lang, rate, pitch]);
 
   const pause = () => { synth?.pause(); setStatus("paused"); };
   const resume = () => { synth?.resume(); setStatus("speaking"); };
@@ -84,15 +132,13 @@ export default function TextToSpeech({ initialText = "" }) {
   const isPaused  = status === "paused";
   const isActive  = isSpeaking || isPaused;
 
-  // Group voices by language code for <optgroup>
-  const voicesByLang = voices.reduce((acc, v) => {
-    const lang = v.lang || "Unknown";
-    (acc[lang] = acc[lang] || []).push(v);
+  // Group filtered voices by full lang tag for <optgroup>
+  const voicesByLang = filteredVoices.reduce((acc, v) => {
+    const l = v.lang || "Unknown";
+    (acc[l] = acc[l] || []).push(v);
     return acc;
   }, {});
-  const sortedLangs = Object.keys(voicesByLang).sort((a, b) =>
-    a.startsWith("en") ? -1 : b.startsWith("en") ? 1 : a.localeCompare(b)
-  );
+  const sortedLangs = Object.keys(voicesByLang).sort();
 
   // --- Not supported guard --------------------------------------------------
   if (!isSynthSupported) {
@@ -107,6 +153,8 @@ export default function TextToSpeech({ initialText = "" }) {
       </div>
     );
   }
+
+  const noVoiceForLang = lang && voices.length > 0 && filteredVoices.length === 0;
 
   return (
     <div className={styles.card}>
@@ -139,11 +187,39 @@ export default function TextToSpeech({ initialText = "" }) {
       {/* ── Controls ── */}
       <div className={styles.controls}>
 
+        {/* Language filter */}
+        <div className={styles.controlGroup}>
+          <label className={styles.controlLabel}>Language</label>
+          <select
+            className={styles.select}
+            value={lang}
+            onChange={(e) => setLang(e.target.value)}
+            disabled={isActive}
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.value || "all"} value={l.value}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Voice selector */}
         <div className={styles.controlGroup}>
           <label className={styles.controlLabel}>Voice</label>
+
           {voices.length === 0 ? (
             <p className={styles.hint}>Loading voices…</p>
+          ) : noVoiceForLang ? (
+            <p className={styles.hint} style={{ color: "var(--warning, #f59e0b)" }}>
+              No system voice installed for {LANG_LABEL[lang] ?? lang}.
+              {lang === "bn" && (
+                <>
+                  {" "}On Windows, install via <em>Settings → Time &amp; language → Language → Add a language → বাংলা</em>.
+                  On Android/Chrome OS, Google&nbsp;TTS supports Bangla out of the box.
+                </>
+              )}
+            </p>
           ) : (
             <select
               className={styles.select}
@@ -151,9 +227,9 @@ export default function TextToSpeech({ initialText = "" }) {
               onChange={(e) => setVoiceURI(e.target.value)}
               disabled={isActive}
             >
-              {sortedLangs.map((lang) => (
-                <optgroup key={lang} label={lang}>
-                  {voicesByLang[lang].map((v) => (
+              {sortedLangs.map((l) => (
+                <optgroup key={l} label={l}>
+                  {voicesByLang[l].map((v) => (
                     <option key={v.voiceURI} value={v.voiceURI}>
                       {v.name}{v.default ? " ★" : ""}
                     </option>
@@ -219,7 +295,7 @@ export default function TextToSpeech({ initialText = "" }) {
             <button
               className={styles.playBtn}
               onClick={speak}
-              disabled={!text.trim() || voices.length === 0}
+              disabled={!text.trim() || filteredVoices.length === 0}
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
                 <polygon points="5 3 19 12 5 21 5 3" />

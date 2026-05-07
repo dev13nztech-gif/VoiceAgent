@@ -5,19 +5,18 @@
 #   - uvicorn / FastAPI    -> /api/* transcription routes
 #   - FastAPI StaticFiles  -> React SPA on every other path
 #
-# No nginx. No supervisor. Just Python.
-#
 # Build:
 #   docker build -t voiceagent .
 #
-# Build with a different baked-in model (tiny | base | small | medium | large-v2 | large-v3):
-#   docker build --build-arg WHISPER_MODEL=small -t voiceagent .
+# Bake a custom subset of models (comma-separated, no spaces):
+#   docker build --build-arg WHISPER_MODELS=tiny,base,small -t voiceagent .
+#
+# Pick which baked-in model is pre-loaded at startup (small => fast cold start):
+#   docker build --build-arg DEFAULT_MODEL=small -t voiceagent .
 #
 # Run locally:
 #   docker run -p 8080:8080 voiceagent
 #   open http://localhost:8080
-#
-# Deploy to Google Cloud Run (see commands below the file).
 # =============================================================================
 
 
@@ -36,15 +35,22 @@ RUN npm run build
 # -- Stage 2: Python runtime -------------------------------------------------
 FROM python:3.11-slim
 
-# Choose which Whisper model to bake into the image at build time.
-#   tiny     ~75 MB   | 1 GB  RAM   <- smallest, lowest accuracy
-#   base     ~145 MB  | 1.5 GB RAM  <- recommended for Cloud Run free tier
+# All Whisper sizes pre-downloaded at build time so the frontend can offer
+# every model in the picker. Comma-separated, no spaces.
+#   tiny     ~75 MB   | 1 GB  RAM
+#   base     ~145 MB  | 1.5 GB RAM
 #   small    ~465 MB  | 2 GB  RAM
 #   medium   ~1.5 GB  | 4 GB  RAM
 #   large-v2 ~3 GB    | 8 GB  RAM
 #   large-v3 ~3 GB    | 8 GB  RAM
-ARG WHISPER_MODEL=base
-ENV WHISPER_MODEL=${WHISPER_MODEL}
+# Total image footprint with all six: ~8.5 GB.
+ARG WHISPER_MODELS=tiny,base,small,medium,large-v2,large-v3
+ENV WHISPER_MODELS=${WHISPER_MODELS}
+
+# Which baked-in model the server should pre-load at startup.
+# Pick a small one to keep cold start fast; users can switch in the UI.
+ARG DEFAULT_MODEL=base
+ENV WHISPER_MODEL=${DEFAULT_MODEL}
 
 WORKDIR /app
 
@@ -52,11 +58,14 @@ WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the chosen Whisper model so the first request never has to
-# fetch weights from the internet (avoids Cloud Run cold-start timeouts).
-# NOTE: written as `python -c` (single line) instead of a heredoc, because
-# Cloud Build's classic Docker builder does not support heredoc syntax.
-RUN python -c "import os; from faster_whisper import WhisperModel; m=os.environ['WHISPER_MODEL']; print(f'[build] Pre-downloading Whisper model: {m}', flush=True); WhisperModel(m, device='cpu', compute_type='int8'); print(f'[build] Model {m} cached.', flush=True)"
+# Pre-download every requested Whisper model so the first request never has
+# to fetch weights from the internet (avoids Cloud Run cold-start timeouts).
+# Written as `python -c` (single line) because Cloud Build's classic Docker
+# builder does not support heredoc syntax.
+RUN python -c "import os; from faster_whisper import WhisperModel; \
+    models=[m.strip() for m in os.environ['WHISPER_MODELS'].split(',') if m.strip()]; \
+    [ (print(f'[build] downloading {m}', flush=True), WhisperModel(m, device='cpu', compute_type='int8')) for m in models ]; \
+    print(f'[build] all models cached: {models}', flush=True)"
 
 # Backend source
 COPY backend/main.py .
