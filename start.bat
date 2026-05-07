@@ -1,44 +1,34 @@
 @echo off
-echo === VoiceAgent Startup ===
+setlocal
+
+echo.
+echo  ================================================
+echo   VoiceAgent - Local Launcher
+echo  ================================================
 echo.
 
-:: Check Python
-where python >nul 2>&1 || (echo [ERROR] Python not found. Install Python 3.10+ && pause && exit /b 1)
-
-:: Check Node
-where node >nul 2>&1 || (echo [ERROR] Node.js not found. Install Node.js 18+ && pause && exit /b 1)
-
-:: Check ffmpeg
-where ffmpeg >nul 2>&1 || (
-  echo [WARN] ffmpeg not found. The av package provides bundled FFmpeg for most formats.
-  echo        For broadest format support, install ffmpeg: https://www.gyan.dev/ffmpeg/builds/
-  echo.
+:: -- Build the React frontend ------------------------------------------------
+echo [1/2] Building frontend...
+cd /d "%~dp0frontend"
+call npm install --silent
+call npm run build
+if errorlevel 1 (
+    echo.
+    echo  ERROR: Frontend build failed. Check the output above.
+    pause
+    exit /b 1
 )
-
-:: Backend setup
-echo [1/3] Installing Python dependencies...
-cd backend
-pip install -r requirements.txt --quiet
-if errorlevel 1 (echo [ERROR] pip install failed && pause && exit /b 1)
-
-:: Start backend in new window
-echo [2/3] Starting backend on http://localhost:8000 ...
-start "VoiceAgent Backend" cmd /k "set HF_HUB_DISABLE_SYMLINKS_WARNING=1 && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
-
-cd ..\frontend
-
-:: Frontend setup
-echo [3/3] Installing Node dependencies and starting UI...
-if not exist node_modules (
-  npm install
-)
-start "VoiceAgent Frontend" cmd /k "npm run dev"
-
+echo  Frontend built successfully.
 echo.
-echo === VoiceAgent is starting ===
-echo   UI:  http://localhost:3000
-echo   API: http://localhost:8000
-echo   Docs: http://localhost:8000/docs
+
+:: -- Start the combined FastAPI server ---------------------------------------
+echo [2/2] Starting server...
 echo.
-echo Close the two terminal windows to stop the servers.
-pause
+echo  Open http://localhost:8080 in your browser
+echo  Press Ctrl+C to stop
+echo.
+cd /d "%~dp0backend"
+set STATIC_DIR=%~dp0frontend\dist
+python -m uvicorn main:app --host 127.0.0.1 --port 8080 --reload
+
+endlocal

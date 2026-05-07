@@ -6,6 +6,8 @@ from typing import List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from faster_whisper import WhisperModel
 
 app = FastAPI(title="VoiceAgent API", version="1.0.0")
@@ -23,48 +25,79 @@ ALL_MODELS = ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
 # Model to pre-load at startup (set via WHISPER_MODEL env var).
 DEFAULT_MODEL = os.getenv("WHISPER_MODEL", "tiny")
 
+# ── Device / compute-type selection ────────────────────────────────────────────────────
+# DEVICE       — "cuda" | "cpu" | "auto" (default: auto-detect)
+# COMPUTE_TYPE — "float16" | "int8_float16" | "int8" (default: auto)
+#
+# GPU image (Dockerfile.gpu) sets DEVICE=cuda, COMPUTE_TYPE=float16 via ENV.
+# CPU image keeps defaults (cpu / int8).
+try:
+    import ctranslate2 as _ct2
+    _cuda_count = _ct2.get_cuda_device_count()
+except Exception:
+    _cuda_count = 0
+
+_device_env = os.getenv("DEVICE", "auto")
+DEVICE: str = (
+    ("cuda" if _cuda_count > 0 else "cpu") if _device_env == "auto" else _device_env
+)
+COMPUTE_TYPE: str = os.getenv(
+    "COMPUTE_TYPE",
+    "float16" if DEVICE == "cuda" else "int8",
+)
+
 # In-process model cache — avoids reloading weights on every request.
 _model_cache: dict[str, WhisperModel] = {}
 
 
-# ── Model discovery ────────────────────────────────────────────────────────────
+# ── Model discovery ──────────────────────────────────────────────────────────────
 
 def get_downloaded_models() -> List[str]:
     """
-    Return the subset of ALL_MODELS whose weights are already present in the
+    Return the subset of ALL_MODELS whose weights are fully present in the
     HuggingFace hub cache on disk.  The frontend shows only these models.
 
     faster-whisper stores weights under:
-        $HF_HOME/hub/models--Systran--faster-whisper-{name}/snapshots/...
-    A model is considered available when that directory exists and is non-empty.
+        $HF_HOME/hub/models--Systran--faster-whisper-{name}/snapshots/<sha>/
+    A model is considered complete only when model.bin exists in a snapshot
+    directory — this guards against partial/incomplete downloads.
     """
     hf_home = Path(os.getenv("HF_HOME", Path.home() / ".cache" / "huggingface"))
     hub_dir = hf_home / "hub"
 
     available: List[str] = []
     for name in ALL_MODELS:
-        repo_dir = hub_dir / f"models--Systran--faster-whisper-{name}"
-        if repo_dir.exists() and any(repo_dir.iterdir()):
-            available.append(name)
+        snapshots = hub_dir / f"models--Systran--faster-whisper-{name}" / "snapshots"
+        if snapshots.exists():
+            # A model is fully downloaded only when model.bin is present in
+            # at least one snapshot — guards against partial/incomplete downloads.
+            for snapshot in snapshots.iterdir():
+                if (snapshot / "model.bin").exists():
+                    available.append(name)
+                    break
 
     # If nothing is cached yet (e.g. pure local dev before any download),
     # fall back to the full list so the UI is never empty.
     return available if available else ALL_MODELS
 
 
-# ── Model loader ───────────────────────────────────────────────────────────────
+# ── Model loader ──────────────────────────────────────────────────────────────
 
 def load_model(model_size: str) -> WhisperModel:
     if model_size not in _model_cache:
-        print(f"[VoiceAgent] Loading Whisper model: {model_size} ...", flush=True)
+        print(
+            f"[VoiceAgent] Loading Whisper '{model_size}' "
+            f"on {DEVICE} ({COMPUTE_TYPE}) ...",
+            flush=True,
+        )
         _model_cache[model_size] = WhisperModel(
-            model_size, device="cpu", compute_type="int8"
+            model_size, device=DEVICE, compute_type=COMPUTE_TYPE
         )
         print(f"[VoiceAgent] Model '{model_size}' ready.", flush=True)
     return _model_cache[model_size]
 
 
-# ── Startup ────────────────────────────────────────────────────────────────────
+# ── Startup ──────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup():
@@ -72,12 +105,14 @@ async def startup():
     load_model(DEFAULT_MODEL)
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# ── Routes ──────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health():
     return {
         "status": "ok",
+        "device": DEVICE,
+        "compute_type": COMPUTE_TYPE,
         "loaded_models": list(_model_cache.keys()),
     }
 
@@ -120,7 +155,7 @@ async def transcribe(
         t0 = time.time()
         whisper = load_model(model)
 
-        # language=None -> auto-detect; explicit code forces a language.
+        # language=None → auto-detect; explicit code forces a language.
         forced_lang = (
             language if language and language.lower() not in ("", "auto") else None
         )
@@ -171,3 +206,40 @@ async def transcribe(
         }
     finally:
         os.unlink(tmp_path)
+
+
+# ── Static / SPA serving ─────────────────────────────────────────────────────────
+# In Docker  → STATIC_DIR=/app/static  (set via ENV in Dockerfile)
+# Locally    → defaults to ../frontend/dist  (relative to this file)
+#
+# All /api/* routes above are registered first, so they always win.
+# The catch-all below only fires for non-API paths → perfect SPA fallback.
+
+_STATIC_DIR = Path(
+    os.getenv("STATIC_DIR", Path(__file__).parent.parent / "frontend" / "dist")
+)
+
+if _STATIC_DIR.exists():
+    # Serve hashed Vite assets (JS / CSS bundles) from /assets/*
+    _assets_dir = _STATIC_DIR / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_root():
+        return FileResponse(str(_STATIC_DIR / "index.html"))
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        """Serve static files that exist; fall back to index.html for SPA routes."""
+        candidate = _STATIC_DIR / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_STATIC_DIR / "index.html"))
+else:
+    @app.get("/", include_in_schema=False)
+    async def no_frontend():
+        return {
+            "message": "Frontend not built. Run `npm run build` inside frontend/ first.",
+            "api_docs": "/docs",
+        }

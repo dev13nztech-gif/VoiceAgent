@@ -1,24 +1,24 @@
 # =============================================================================
-# VoiceAgent — Single-container image (FastAPI serves frontend + API)
+# VoiceAgent — GPU-enabled container (NVIDIA CUDA + faster-whisper)
 # =============================================================================
-# One process does everything:
+# Uses NVIDIA L4 / T4 / A100 on Google Cloud Run or any NVIDIA Docker host.
+#
+# One process:
 #   • uvicorn / FastAPI  — transcription API  (/api/*)
 #   • FastAPI StaticFiles — React SPA  (all other paths)
 #
-# No nginx. No supervisord. Just Python.
-#
+# GPU gives ~10–20× speed-up over CPU for large-v3 transcription.
 # Models baked in at build time: medium · large-v2 · large-v3
 #
-# Local usage:
-#   docker build -t voiceagent .
-#   docker run -p 8080:8080 voiceagent
-#   open http://localhost:8080
+# Local usage (requires nvidia-container-toolkit):
+#   docker build -f Dockerfile.gpu -t voiceagent-gpu .
+#   docker run --gpus all -p 8080:8080 voiceagent-gpu
 #
 # With docker compose:
-#   docker compose up --build
+#   docker compose -f docker-compose.gpu.yml up --build
 #
-# Cloud Run:
-#   See deploy-cloudrun.sh
+# Cloud Run (NVIDIA L4):
+#   GPU=1 ./deploy-cloudrun.sh
 # =============================================================================
 
 # ── Stage 1: Build React frontend ─────────────────────────────────────────────────────
@@ -29,8 +29,22 @@ RUN npm install --frozen-lockfile
 COPY frontend/ .
 RUN npm run build
 
-# ── Stage 2: Production image ──────────────────────────────────────────────────────
-FROM python:3.11-slim
+# ── Stage 2: GPU production image ─────────────────────────────────────────────────────
+# CUDA 12.2 + cuDNN 8 runtime on Ubuntu 22.04.
+# The NVIDIA drivers live on the host — only the runtime libs go in the image.
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
+
+# Install Python 3.11 and pip
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-distutils python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && python -m pip install --upgrade pip
+
 WORKDIR /app
 
 # ── Python dependencies ──────────────────────────────────────────────────────────────
@@ -38,10 +52,8 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Pre-download Whisper models at build time ──────────────────────────────────────────────
-# Baking all three models avoids any internet access at runtime.
-#   medium   ~1.5 GB
-#   large-v2 ~3.0 GB
-#   large-v3 ~3.0 GB
+# Download using CPU so no GPU is required during docker build.
+# At runtime the loaded model is transferred to the GPU automatically.
 RUN python - <<'EOF'
 from faster_whisper import WhisperModel
 for model in ["medium", "large-v2", "large-v3"]:
@@ -58,15 +70,17 @@ COPY backend/main.py .
 COPY --from=frontend-builder /build/dist /app/static
 
 # ── Environment ──────────────────────────────────────────────────────────────
-# STATIC_DIR    — where FastAPI looks for the React build
-# WHISPER_MODEL — model pre-loaded at startup for fast first request
-# PORT          — Cloud Run injects this automatically; default 8080
+# DEVICE=cuda          — use the GPU for inference
+# COMPUTE_TYPE=float16 — half-precision for maximum GPU throughput
+# WHISPER_MODEL        — large-v3 is the default on GPU
+# PORT                 — Cloud Run injects this; default 8080
 ENV STATIC_DIR=/app/static \
-    WHISPER_MODEL=medium \
+    DEVICE=cuda \
+    COMPUTE_TYPE=float16 \
+    WHISPER_MODEL=large-v3 \
     PORT=8080 \
     HF_HUB_DISABLE_SYMLINKS_WARNING=1
 
 EXPOSE 8080
 
-# Single process — no supervisor needed
 CMD ["sh", "-c", "python -m uvicorn main:app --host 0.0.0.0 --port ${PORT}"]

@@ -11,6 +11,7 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* ── Meta ── */
 .meta {
   display: flex;
   align-items: center;
@@ -79,6 +80,35 @@
   color: var(--accent-hover);
 }
 
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ttsBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent-hover);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.ttsBtn:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 .copyBtn {
   display: flex;
   align-items: center;
@@ -102,6 +132,7 @@
   background: var(--accent-dim);
 }
 
+/* ── Transcript ── */
 .transcript {
   padding: 24px;
   font-size: 1rem;
@@ -117,6 +148,7 @@
   font-style: italic;
 }
 
+/* ── Segments ── */
 .segmentsSection {
   border-top: 1px solid var(--border);
   padding: 12px 20px 16px;

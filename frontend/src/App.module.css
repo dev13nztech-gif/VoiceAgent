@@ -66,6 +66,45 @@
   flex-shrink: 0;
 }
 
+/* ── Tab bar ──────────────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 6px;
+}
+
+.tab {
+  flex: 1;
+  padding: 10px 20px;
+  border-radius: var(--radius-md);
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.15s;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.activeTab {
+  background: var(--accent-dim);
+  color: var(--accent-hover);
+  border: 1px solid var(--border-active, var(--accent));
+}
+
 .footer {
   text-align: center;
   padding: 20px;

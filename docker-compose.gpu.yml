@@ -1,0 +1,50 @@
+version: "3.9"
+
+# VoiceAgent — GPU variant (NVIDIA L4 / T4 / A100)
+#
+# Requires:
+#   • nvidia-container-toolkit installed on the host
+#   • Docker Desktop with GPU support  OR  docker + nvidia-docker2
+#
+# Usage:
+#   docker compose -f docker-compose.gpu.yml up --build
+#   open http://localhost:8080
+#
+# Verify GPU is visible inside the container:
+#   docker compose -f docker-compose.gpu.yml exec voiceagent nvidia-smi
+
+services:
+  voiceagent:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    ports:
+      - "8080:8080"
+    volumes:
+      - whisper_cache:/root/.cache/huggingface
+    environment:
+      PORT: "8080"
+      STATIC_DIR: "/app/static"
+      DEVICE: "cuda"
+      COMPUTE_TYPE: "float16"
+      WHISPER_MODEL: "large-v3"
+      HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
+    # ── GPU allocation ───────────────────────────────────────────────────────────
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1              # request 1 GPU
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  whisper_cache:
