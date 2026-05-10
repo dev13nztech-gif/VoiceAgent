@@ -10,8 +10,8 @@
 #   2. Docker Desktop running locally
 #   3. One-time auth setup:
 #        gcloud auth login
-#        gcloud auth configure-docker
 #        gcloud config set project YOUR_PROJECT_ID
+#        gcloud auth configure-docker ${REGION}-docker.pkg.dev   # e.g. us-central1-docker.pkg.dev
 #
 # Usage:
 #   ./deploy-cloudrun.sh                        # CPU, base model
@@ -26,6 +26,7 @@ set -euo pipefail
 PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project 2>/dev/null)}"
 REGION="${REGION:-us-central1}"
 SERVICE_NAME="${SERVICE_NAME:-voiceagent}"
+REPO="${REPO:-voiceagent}"             # Artifact Registry repository name
 GPU="${GPU:-0}"                        # set GPU=1 to deploy with NVIDIA L4
 
 # GPU forces large-v3; CPU defaults to base
@@ -42,7 +43,7 @@ else
   DOCKERFILE="Dockerfile"
 fi
 
-IMAGE="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO}/${SERVICE_NAME}"
 
 # ── Resource sizing ────────────────────────────────────────────────────────────
 if [[ "$GPU" == "1" ]]; then
@@ -51,7 +52,12 @@ if [[ "$GPU" == "1" ]]; then
   MEMORY="16Gi"
   CPU="4"
   CONCURRENCY="2"
-  GPU_FLAGS="--gpu 1 --gpu-type nvidia-l4 --no-cpu-throttling"
+  # --no-gpu-zonal-redundancy matches the most common GPU quota shape and
+  # avoids the "Zonal Redundancy" quota requirement.
+  # --cpu-boost speeds up the cold start while large-v3 loads onto the GPU.
+  # Startup probe gives the container up to 5 min to come healthy
+  # (large-v3 takes ~20–30s to load on L4; default Cloud Run probe is too aggressive).
+  GPU_FLAGS="--gpu 1 --gpu-type nvidia-l4 --no-gpu-zonal-redundancy --no-cpu-throttling --cpu-boost --startup-probe=httpGet.path=/api/health,initialDelaySeconds=0,periodSeconds=10,timeoutSeconds=5,failureThreshold=30"
   GPU_ENVS=",DEVICE=cuda,COMPUTE_TYPE=float16"
 else
   case "$WHISPER_MODEL" in
@@ -104,20 +110,31 @@ echo ""
 echo "[1/4] Enabling GCP APIs…"
 gcloud services enable \
   run.googleapis.com \
-  containerregistry.googleapis.com \
+  artifactregistry.googleapis.com \
   --project="${PROJECT_ID}" --quiet
+
+# Ensure the Artifact Registry repository exists (one-time create per project/region).
+if ! gcloud artifacts repositories describe "${REPO}" \
+      --location="${REGION}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+  echo "       Creating Artifact Registry repo '${REPO}' in ${REGION}…"
+  gcloud artifacts repositories create "${REPO}" \
+    --repository-format=docker \
+    --location="${REGION}" \
+    --project="${PROJECT_ID}" \
+    --quiet
+fi
 
 # ── Build image ──────────────────────────────────────────────────────────────
 echo "[2/4] Building image (${DOCKERFILE}, model: ${WHISPER_MODEL})…"
-echo "      GPU build may take 10–20 min — CUDA base image + 3 model downloads."
+echo "      GPU build may take 10–20 min — CUDA base image + model downloads."
 docker build \
   --file "${DOCKERFILE}" \
   --tag "${IMAGE}:latest" \
   --tag "${IMAGE}:${WHISPER_MODEL}" \
   .
 
-# ── Push to GCR ──────────────────────────────────────────────────────────────
-echo "[3/4] Pushing to Google Container Registry…"
+# ── Push to Artifact Registry ──────────────────────────────────────────────────────────
+echo "[3/4] Pushing to Artifact Registry (${REGION}-docker.pkg.dev)…"
 docker push "${IMAGE}:latest"
 docker push "${IMAGE}:${WHISPER_MODEL}"
 

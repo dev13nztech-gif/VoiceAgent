@@ -1,81 +1,85 @@
 # =============================================================================
-# VoiceAgent — Single-container image (FastAPI serves frontend + API)
+# VoiceAgent — GPU-enabled container (NVIDIA CUDA + faster-whisper)
 # =============================================================================
-# One Python process does everything:
-#   - uvicorn / FastAPI    -> /api/* transcription routes
-#   - FastAPI StaticFiles  -> React SPA on every other path
+# Uses NVIDIA L4 / T4 / A100 on Google Cloud Run or any NVIDIA Docker host.
 #
-# Build:
-#   docker build -t voiceagent .
+# One process:
+#   • uvicorn / FastAPI  — transcription API  (/api/*)
+#   • FastAPI StaticFiles — React SPA  (all other paths)
 #
-# Bake a custom subset of models (comma-separated, no spaces):
-#   docker build --build-arg WHISPER_MODELS=tiny,base,small -t voiceagent .
+# GPU gives ~10–20× speed-up over CPU for large-v3 transcription.
+# Models baked in at build time: large-v3 (default).
+# To bake additional models, pass --build-arg MODELS="medium large-v2 large-v3".
 #
-# Pick which baked-in model is pre-loaded at startup (small => fast cold start):
-#   docker build --build-arg DEFAULT_MODEL=small -t voiceagent .
+# Local usage (requires nvidia-container-toolkit):
+#   docker build -f Dockerfile.gpu -t voiceagent-gpu .
+#   docker run --gpus all -p 8080:8080 voiceagent-gpu
 #
-# Run locally:
-#   docker run -p 8080:8080 voiceagent
-#   open http://localhost:8080
+# With docker compose:
+#   docker compose -f docker-compose.gpu.yml up --build
+#
+# Cloud Run (NVIDIA L4):
+#   GPU=1 ./deploy-cloudrun.sh
 # =============================================================================
 
-
-# -- Stage 1: Build the React frontend ---------------------------------------
+# ── Stage 1: Build React frontend ─────────────────────────────────────────────────────
 FROM node:20-alpine AS frontend-builder
 WORKDIR /build
-
-# Copy lockfile + manifest first so npm install is cached when source changes.
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci
-
-COPY frontend/ ./
+COPY frontend/package.json .
+RUN npm install --frozen-lockfile
+COPY frontend/ .
 RUN npm run build
 
+# ── Stage 2: GPU production image ─────────────────────────────────────────────────────
+# CUDA 12.2 + cuDNN 8 runtime on Ubuntu 22.04.
+# The NVIDIA drivers live on the host — only the runtime libs go in the image.
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 
-# -- Stage 2: Python runtime -------------------------------------------------
-FROM python:3.11-slim
-
-# All Whisper sizes pre-downloaded at build time so the frontend can offer
-# every model in the picker. Comma-separated, no spaces.
-#   tiny     ~75 MB   | 1 GB  RAM
-#   base     ~145 MB  | 1.5 GB RAM
-#   small    ~465 MB  | 2 GB  RAM
-#   medium   ~1.5 GB  | 4 GB  RAM
-#   large-v2 ~3 GB    | 8 GB  RAM
-#   large-v3 ~3 GB    | 8 GB  RAM
-# Total image footprint with all six: ~8.5 GB.
-ARG WHISPER_MODELS=tiny,base,small,medium,large-v2,large-v3
-ENV WHISPER_MODELS=${WHISPER_MODELS}
-
-# Which baked-in model the server should pre-load at startup.
-# Pick a small one to keep cold start fast; users can switch in the UI.
-ARG DEFAULT_MODEL=base
-ENV WHISPER_MODEL=${DEFAULT_MODEL}
+# Install Python 3.11 and pip
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-distutils python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && python -m pip install --upgrade pip
 
 WORKDIR /app
 
-# Python deps first (cached unless requirements.txt changes).
+# ── Python dependencies ──────────────────────────────────────────────────────────────
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download every requested Whisper model so the first request never has
-# to fetch weights from the internet (avoids Cloud Run cold-start timeouts).
-# Written as `python -c` (single line) because Cloud Build's classic Docker
-# builder does not support heredoc syntax.
-RUN python -c "import os; from faster_whisper import WhisperModel; \
-    models=[m.strip() for m in os.environ['WHISPER_MODELS'].split(',') if m.strip()]; \
-    [ (print(f'[build] downloading {m}', flush=True), WhisperModel(m, device='cpu', compute_type='int8')) for m in models ]; \
-    print(f'[build] all models cached: {models}', flush=True)"
+# ── Pre-download Whisper models at build time ──────────────────────────────────────────────
+# Download using CPU so no GPU is required during docker build.
+# At runtime the loaded model is transferred to the GPU automatically.
+# MODELS is space-separated; default bakes only large-v3 (~3 GB).
+# Override with: --build-arg MODELS="medium large-v2 large-v3"
+ARG MODELS="large-v3"
+ENV MODELS=${MODELS}
+RUN python -c "import os; from faster_whisper import WhisperModel; [\
+    (print(f'[build] Downloading Whisper {m}...', flush=True), \
+     WhisperModel(m, device='cpu', compute_type='int8'), \
+     print(f'[build] {m} cached.', flush=True)) \
+    for m in os.environ['MODELS'].split()]"
 
-# Backend source
+# ── Application source ──────────────────────────────────────────────────────────────
 COPY backend/main.py .
 
-# React production build -> served by FastAPI StaticFiles
+# ── React production build → served by FastAPI ────────────────────────────────────────
 COPY --from=frontend-builder /build/dist /app/static
 
-# STATIC_DIR    : where FastAPI looks for the React build
-# PORT          : Cloud Run injects this automatically; 8080 is a safe default
+# ── Environment ──────────────────────────────────────────────────────────────
+# DEVICE=cuda          — use the GPU for inference
+# COMPUTE_TYPE=float16 — half-precision for maximum GPU throughput
+# WHISPER_MODEL        — large-v3 is the default on GPU
+# PORT                 — Cloud Run injects this; default 8080
 ENV STATIC_DIR=/app/static \
+    DEVICE=cuda \
+    COMPUTE_TYPE=float16 \
+    WHISPER_MODEL=large-v3 \
     PORT=8080 \
     HF_HUB_DISABLE_SYMLINKS_WARNING=1
 

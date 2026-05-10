@@ -1,35 +1,44 @@
 version: "3.9"
 
-# Single-container VoiceAgent
+# VoiceAgent — GPU variant (NVIDIA L4 / T4 / A100)
+#
+# Requires:
+#   • nvidia-container-toolkit installed on the host
+#   • Docker Desktop with GPU support  OR  docker + nvidia-docker2
 #
 # Usage:
-#   docker compose up --build
+#   docker compose -f docker-compose.gpu.yml up --build
 #   open http://localhost:8080
 #
-# FastAPI serves both the transcription API (/api/*) and the React SPA —
-# no nginx or supervisord required.
-# Models baked in at build time: medium · large-v2 · large-v3
+# Verify GPU is visible inside the container:
+#   docker compose -f docker-compose.gpu.yml exec voiceagent nvidia-smi
 
 services:
   voiceagent:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.gpu
     ports:
       - "8080:8080"
     volumes:
-      # Persist the HuggingFace cache so models survive container restarts.
       - whisper_cache:/root/.cache/huggingface
     environment:
       PORT: "8080"
       STATIC_DIR: "/app/static"
-      # Controls which model is pre-loaded at startup (fast first request).
-      # Must be one of: medium | large-v2 | large-v3
-      WHISPER_MODEL: medium
+      DEVICE: "cuda"
+      COMPUTE_TYPE: "float16"
+      WHISPER_MODEL: "large-v3"
       HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
+    # ── GPU allocation ───────────────────────────────────────────────────────────
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1              # request 1 GPU
+              capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
-      # Use Python (always available) instead of curl
       test: ["CMD", "python", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health', timeout=5)"]
       interval: 30s

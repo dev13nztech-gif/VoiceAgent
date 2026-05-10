@@ -1,0 +1,33 @@
+# =============================================================================
+# Cloud Build config — builds the GPU image inside GCP and pushes it directly
+# to Artifact Registry. Avoids 10–20 min local builds + multi-GB upload.
+#
+# Usage:
+#   REGION=us-central1
+#   PROJECT_ID=$(gcloud config get-value project)
+#   IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/voiceagent/voiceagent-gpu:latest"
+#
+#   gcloud builds submit \
+#     --config cloudbuild.yaml \
+#     --substitutions=_IMAGE="${IMAGE}",_DOCKERFILE=Dockerfile.gpu,_MODELS="large-v3"
+#
+# Then deploy with the existing script (skip local build):
+#   GPU=1 SKIP_BUILD=1 ./deploy-cloudrun.sh    # if you wire that flag in later
+# =============================================================================
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=${_DOCKERFILE}
+      - --build-arg=MODELS=${_MODELS}
+      - --tag=${_IMAGE}
+      - .
+images:
+  - ${_IMAGE}
+substitutions:
+  _DOCKERFILE: Dockerfile.gpu
+  _MODELS: large-v3
+options:
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: '100'
+timeout: 3600s
