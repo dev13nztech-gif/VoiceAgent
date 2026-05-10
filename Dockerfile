@@ -36,8 +36,16 @@ RUN npm run build
 FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 
 # Install Python 3.11 and pip
+# DEBIAN_FRONTEND=noninteractive + TZ avoids tzdata's interactive prompt,
+# which otherwise hangs the build (Cloud Build has no TTY) and times out.
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        tzdata \
         software-properties-common \
+    && ln -fs /usr/share/zoneinfo/$TZ /etc/localtime \
+    && dpkg-reconfigure -f noninteractive tzdata \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get install -y --no-install-recommends \
         python3.11 python3.11-distutils python3-pip \
